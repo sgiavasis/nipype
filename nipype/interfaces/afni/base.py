@@ -200,10 +200,40 @@ class AFNICommandInputSpec(AFNIBaseCommandInputSpec):
 
 class AFNICommand(AFNIBaseCommand):
     input_spec = AFNICommandInputSpec
+    
+    def _gen_filename(self, name):
+        trait_spec = self.inputs.trait(name)
+        if name == "out_file" and (isdefined(self.inputs.prefix) or isdefined(self.inputs.suffix)):
+            suffix = ''
+            prefix = ''
+            if isdefined(self.inputs.prefix):
+                prefix = self.inputs.prefix
+            if isdefined(self.inputs.suffix):
+                suffix = self.inputs.suffix
+
+            _, base, _ = split_filename(
+                getattr(self.inputs, trait_spec.name_source))
+            return self._gen_fname(basename=base, prefix=prefix, suffix=suffix, cwd=os.getcwd())
+
+        else:
+            if getattr(self.inputs, name):
+                return os.path.join(
+                    os.getcwd(),super(AFNICommand, self)._gen_filename(name))
 
     def _overload_extension(self, value):
         path, base, _ = split_filename(value)
         return os.path.join(path, base + Info.outputtype_to_ext(self.inputs.outputtype))
+        
+    def _list_outputs(self):
+        metadata = dict(name_source=lambda t: t is not None)
+        out_names = self.inputs.traits(**metadata).keys()
+        if out_names:
+            outputs = self.output_spec().get()
+            for name in out_names:
+                out = self._gen_filename(name)
+                if out and isdefined(out):
+                    outputs[name] = os.path.abspath(out)
+            return outputs
 
 
 class AFNICommandOutputSpec(TraitedSpec):
