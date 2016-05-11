@@ -754,7 +754,7 @@ class BaseInterface(Interface):
             raise Exception('No input_spec in class: %s' %
                             self.__class__.__name__)
         self.inputs = self.input_spec(**inputs)
-        self.estimated_memory = 1
+        self.estimated_memory_gb = 1
         self.num_threads = 1
 
     @classmethod
@@ -1196,41 +1196,143 @@ class Stream(object):
 
 # Get number of threads for process
 def _get_num_threads(proc):
-    '''
-    '''
+    """Function to get the number of threads a process is using
+    NOTE: If 
+
+    Parameters
+    ----------
+    proc : psutil.Process instance
+        the process to evaluate thead usage of
+
+    Returns
+    -------
+    num_threads : int
+        the number of threads that the process is using
+    """
 
     # Import packages
     import psutil
-    import logging as lg
 
-    # Init variables
-    num_threads = proc.num_threads()
+    # If process is running
+    if proc.status() == psutil.STATUS_RUNNING:
+        num_threads = proc.num_threads()
+    elif proc.num_threads() > 1:
+        tprocs = [psutil.Process(thr.id) for thr in proc.threads()]
+        alive_tprocs = [tproc for tproc in tprocs if tproc.status() == psutil.STATUS_RUNNING]
+        num_threads = len(alive_tprocs)
+    else:
+        num_threads = 1
+
+    # Try-block for errors
     try:
-        num_children = len(proc.children())
-        for child in proc.children():
-            num_threads = max(num_threads, num_children,
-                              child.num_threads(), len(child.children()))
+        child_threads = 0
+        # Iterate through child processes and get number of their threads
+        for child in proc.children(recursive=True):
+            # Leaf process
+            if len(child.children()) == 0:
+                # If process is running, get its number of threads
+                if child.status() == psutil.STATUS_RUNNING:
+                    child_thr = child.num_threads()
+                # If its not necessarily running, but still multi-threaded
+                elif child.num_threads() > 1:
+                    # Cast each thread as a process and check for only running
+                    tprocs = [psutil.Process(thr.id) for thr in child.threads()]
+                    alive_tprocs = [tproc for tproc in tprocs if tproc.status() == psutil.STATUS_RUNNING]
+                    child_thr = len(alive_tprocs)
+                # Otherwise, no threads are running
+                else:
+                    child_thr = 0
+                # Increment child threads
+                child_threads += child_thr
+    # Catch any NoSuchProcess errors
     except psutil.NoSuchProcess:
         pass
 
+    # Number of threads is max between found active children and parent
+    num_threads = max(child_threads, num_threads)
+
+    # Return number of threads found
     return num_threads
 
 
-# Get max resources used for process
-def _get_max_resources_used(proc, mem_mb, num_threads, poll=False):
-    '''
-    docstring
-    '''
+# Get ram usage of process
+def _get_ram_mb(pid, pyfunc=False):
+    """Function to get the RAM usage of a process and its children
+
+    Parameters
+    ----------
+    pid : integer
+        the PID of the process to get RAM usage of
+    pyfunc : boolean (optional); default=False
+        a flag to indicate if the process is a python function;
+        when Pythons are multithreaded via multiprocess or threading,
+        children functions include their own memory + parents. if this
+        is set, the parent memory will removed from children memories
+
+    Reference: http://ftp.dev411.com/t/python/python-list/095thexx8g/multiprocessing-forking-memory-usage
+
+    Returns
+    -------
+    mem_mb : float
+        the memory RAM in MB utilized by the process PID
+    """
 
     # Import packages
-    from memory_profiler import _get_memory
+    import psutil
+
+    # Init variables
+    _MB = 1024.0**2
+
+    # Try block to protect against any dying processes in the interim
+    try:
+        # Init parent
+        parent = psutil.Process(pid)
+        # Get memory of parent
+        parent_mem = parent.memory_info().rss
+        mem_mb = parent_mem/_MB
+
+        # Iterate through child processes
+        for child in parent.children(recursive=True):
+            child_mem = child.memory_info().rss
+            if pyfunc:
+                child_mem -= parent_mem
+            mem_mb += child_mem/_MB
+
+    # Catch if process dies, return gracefully
+    except psutil.NoSuchProcess:
+        pass
+
+    # Return memory
+    return mem_mb
+
+
+# Get max resources used for process
+def get_max_resources_used(pid, mem_mb, num_threads, pyfunc=False):
+    """Function to get the RAM and threads usage of a process
+
+    Paramters
+    ---------
+    pid : integer
+        the process ID of process to profile
+    mem_mb : float
+        the high memory watermark so far during process execution (in MB)
+    num_threads: int
+        the high thread watermark so far during process execution
+
+    Returns
+    -------
+    mem_mb : float
+        the new high memory watermark of process (MB)
+    num_threads : float
+        the new high thread watermark of process
+    """
+
+    # Import packages
     import psutil
 
     try:
-        mem_mb = max(mem_mb, _get_memory(proc.pid, include_children=True))
-        num_threads = max(num_threads, _get_num_threads(psutil.Process(proc.pid)))
-        if poll:
-            proc.poll()
+        mem_mb = max(mem_mb, _get_ram_mb(pid, pyfunc=pyfunc))
+        num_threads = max(num_threads, _get_num_threads(psutil.Process(pid)))
     except Exception as exc:
         iflogger.info('Could not get resources used by process. Error: %s'\
                       % exc)
@@ -1245,13 +1347,17 @@ def run_command(runtime, output=None, timeout=0.01, redirect_x=False):
     The returned runtime contains a merged stdout+stderr log with timestamps
     """
 
-    # Import packages
+    # Init logger
+    logger = logging.getLogger('workflow')
+
+    # Default to profiling the runtime
     try:
-        import memory_profiler
         import psutil
-        mem_prof = True
-    except:
-        mem_prof = False
+        runtime_profile = True
+    except ImportError as exc:
+        logger.info('Unable to import packages needed for runtime profiling. '\
+                    'Turning off runtime profiler. Reason: %s' % exc)
+        runtime_profile = False
 
     # Init variables
     PIPE = subprocess.PIPE
@@ -1290,9 +1396,9 @@ def run_command(runtime, output=None, timeout=0.01, redirect_x=False):
     outfile = os.path.join(runtime.cwd, 'stdout.nipype')
 
     # Init variables for memory profiling
-    mem_mb = -1
-    num_threads = -1
-    interval = 1
+    mem_mb = 0
+    num_threads = 1
+    interval = .5
 
     if output == 'stream':
         streams = [Stream('stdout', proc.stdout), Stream('stderr', proc.stderr)]
@@ -1310,11 +1416,12 @@ def run_command(runtime, output=None, timeout=0.01, redirect_x=False):
                 for stream in res[0]:
                     stream.read(drain)
         while proc.returncode is None:
-            if mem_prof:
+            if runtime_profile:
                 mem_mb, num_threads = \
-                    _get_max_resources_used(proc, mem_mb, num_threads)
+                    get_max_resources_used(proc.pid, mem_mb, num_threads)
             proc.poll()
             _process()
+            time.sleep(interval)
         _process(drain=1)
 
         # collect results, merge and return
@@ -1328,10 +1435,12 @@ def run_command(runtime, output=None, timeout=0.01, redirect_x=False):
         result['merged'] = [r[1] for r in temp]
 
     if output == 'allatonce':
-        if mem_prof:
+        if runtime_profile:
             while proc.returncode is None:
                 mem_mb, num_threads = \
-                    _get_max_resources_used(proc, mem_mb, num_threads, poll=True)
+                    get_max_resources_used(proc.pid, mem_mb, num_threads)
+                proc.poll()
+                time.sleep(interval)
         stdout, stderr = proc.communicate()
         stdout = stdout.decode(default_encoding)
         stderr = stderr.decode(default_encoding)
@@ -1339,10 +1448,12 @@ def run_command(runtime, output=None, timeout=0.01, redirect_x=False):
         result['stderr'] = stderr.split('\n')
         result['merged'] = ''
     if output == 'file':
-        if mem_prof:
+        if runtime_profile:
             while proc.returncode is None:
                 mem_mb, num_threads = \
-                    _get_max_resources_used(proc, mem_mb, num_threads, poll=True)
+                    get_max_resources_used(proc.pid, mem_mb, num_threads)
+                proc.poll()
+                time.sleep(interval)
         ret_code = proc.wait()
         stderr.flush()
         stdout.flush()
@@ -1350,16 +1461,18 @@ def run_command(runtime, output=None, timeout=0.01, redirect_x=False):
         result['stderr'] = [line.decode(default_encoding).strip() for line in open(errfile, 'rb').readlines()]
         result['merged'] = ''
     if output == 'none':
-        if mem_prof:
+        if runtime_profile:
             while proc.returncode is None:
                 mem_mb, num_threads = \
-                    _get_max_resources_used(proc, mem_mb, num_threads, poll=True)
+                    get_max_resources_used(proc.pid, mem_mb, num_threads)
+                proc.poll()
+                time.sleep(interval)
         proc.communicate()
         result['stdout'] = []
         result['stderr'] = []
         result['merged'] = ''
 
-    setattr(runtime, 'runtime_memory', mem_mb/1024.0)
+    setattr(runtime, 'runtime_memory_gb', mem_mb/1024.0)
     setattr(runtime, 'runtime_threads', num_threads)
     runtime.stderr = '\n'.join(result['stderr'])
     runtime.stdout = '\n'.join(result['stdout'])

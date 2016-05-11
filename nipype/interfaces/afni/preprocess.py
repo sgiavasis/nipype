@@ -567,13 +567,13 @@ class DegreeCentrality(AFNICommand):
     ========
 
     >>> from nipype.interfaces import afni as afni
-    >>> degree = afni.DegreeCentrality()
-    >>> degree.inputs.in_file = 'func_preproc.nii'
+    >>> degree = afni.DegreeCentrality()           
+    >>> degree.inputs.in_file = 'functional.nii'
     >>> degree.inputs.mask = 'mask.nii'
     >>> degree.inputs.sparsity = 1 # keep the top one percent of connections
     >>> degree.inputs.out_file = 'out.nii'
     >>> degree.cmdline
-    '3dDegreeCentrality -sparsity 1 -mask mask.nii -prefix out.nii func_preproc.nii'
+    '3dDegreeCentrality -mask mask.nii -prefix out.nii -sparsity 1.000000 functional.nii'
     >>> res = degree.run() # doctest: +SKIP
     """
 
@@ -656,12 +656,12 @@ class ECM(AFNICommand):
 
     >>> from nipype.interfaces import afni as afni
     >>> ecm = afni.ECM()
-    >>> ecm.inputs.in_file = 'func_preproc.nii'
+    >>> ecm.inputs.in_file = 'functional.nii'
     >>> ecm.inputs.mask = 'mask.nii'
     >>> ecm.inputs.sparsity = 0.1 # keep top 0.1% of connections
     >>> ecm.inputs.out_file = 'out.nii'
     >>> ecm.cmdline
-    '3dECM -sparsity 0.1 -mask mask.nii -prefix out.nii func_preproc.nii'
+    '3dECM -mask mask.nii -prefix out.nii -sparsity 0.100000 functional.nii'
     >>> res = ecm.run() # doctest: +SKIP
     """
 
@@ -694,12 +694,12 @@ class LFCD(AFNICommand):
 
     >>> from nipype.interfaces import afni as afni
     >>> lfcd = afni.LFCD()
-    >>> lfcd.inputs.in_file = 'func_preproc.nii'
+    >>> lfcd.inputs.in_file = 'functional.nii'
     >>> lfcd.inputs.mask = 'mask.nii'
     >>> lfcd.inputs.thresh = 0.8 # keep all connections with corr >= 0.8
     >>> lfcd.inputs.out_file = 'out.nii'
     >>> lfcd.cmdline
-    '3dLFCD -thresh 0.8 -mask mask.nii -prefix out.nii func_preproc.nii'
+    '3dLFCD -mask mask.nii -prefix out.nii -thresh 0.800000 functional.nii'
     >>> res = lfcd.run() # doctest: +SKIP
     """
 
@@ -2627,7 +2627,7 @@ class FWHMxInputSpec(CommandLineInputSpec):
              'is not given, the program picks q=NT/30. -detrend disables -demed, and includes '
              '-unif.')
     demed = traits.Bool(
-        False, argstr='-demed', xorg=['detrend'],
+        False, argstr='-demed', xor=['detrend'],
         desc='If the input dataset has more than one sub-brick (e.g., has a time axis), then '
              'subtract the median of each voxel\'s time series before processing FWHM. This will '
              'tend to remove intrinsic spatial structure and leave behind the noise.')

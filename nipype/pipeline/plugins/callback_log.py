@@ -1,55 +1,65 @@
-import datetime
-import logging
+# emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
+# vi: set ft=python sts=4 ts=4 sw=4 et:
+"""Callback logger for recording workflow and node run stats
+"""
 
-def log_nodes_cb(node, status, result=None):
-    '''
-    '''
+
+# Log node stats function
+def log_nodes_cb(node, status):
+    """Function to record node run statistics to a log file as json
+    dictionaries
+
+    Parameters
+    ----------
+    node : nipype.pipeline.engine.Node
+        the node being logged
+    status : string
+        acceptable values are 'start', 'end'; otherwise it is
+        considered and error
+
+    Returns
+    -------
+    None
+        this function does not return any values, it logs the node
+        status info to the callback logger
+    """
+
+    # Import packages
+    import datetime
+    import logging
+    import json
+
+    # Check runtime profile stats
+    if node.result is not None:
+        try:
+            runtime = node.result.runtime
+            runtime_memory_gb = runtime.runtime_memory_gb
+            runtime_threads = runtime.runtime_threads
+        except AttributeError:
+            runtime_memory_gb = runtime_threads = 'Unknown'
+    else:
+        runtime_memory_gb = runtime_threads = 'N/A'
 
     # Init variables
     logger = logging.getLogger('callback')
-
-    # Check runtime profile stats
-    if result is None:
-        runtime_memory = runtime_seconds = runtime_threads = 'N/A'
-    else:
-        try:
-            runtime_memory = result['runtime_memory']
-        except KeyError:
-            runtime_memory = 'Unknown'
-        try:
-            runtime_seconds = result['runtime_seconds']
-        except KeyError:
-            runtime_seconds = 'Unknown'
-        try:
-            runtime_threads = result['runtime_threads']
-        except:
-            runtime_threads = 'Unknown'
+    status_dict = {'name' : node.name,
+                   'id' : node._id,
+                   'estimated_memory_gb' : node._interface.estimated_memory_gb,
+                   'num_threads' : node._interface.num_threads}
 
     # Check status and write to log
     # Start
     if status == 'start':
-        message  = '{"name":' + '"' + node.name + '"' + ',"id":' + '"' +\
-        node._id + '"' + ',"start":' + '"' +str(datetime.datetime.now()) +\
-        '"' + ',"estimated_memory":' + str(node._interface.estimated_memory) + ',"num_threads":' \
-        + str(node._interface.num_threads) + '}'
-
-        logger.debug(message)
+        status_dict['start'] = str(datetime.datetime.now())
     # End
     elif status == 'end':
-        message  = '{"name":' + '"' + node.name + '"' + ',"id":' + '"' + \
-        node._id + '"' + ',"finish":' + '"' + str(datetime.datetime.now()) +  \
-        '"' + ',"estimated_memory":' + '"'+ str(node._interface.estimated_memory) + '"'+ \
-        ',"num_threads":' + '"'+ str(node._interface.num_threads) + '"'+ \
-        ',"runtime_threads":' + '"'+ str(runtime_threads) + '"'+ \
-        ',"runtime_memory":' + '"'+ str(runtime_memory) + '"' + \
-        ',"runtime_seconds":' + '"'+ str(runtime_seconds) + '"'+ '}'
-
-        logger.debug(message)
+        status_dict['finish'] = str(datetime.datetime.now())
+        status_dict['runtime_threads'] = runtime_threads
+        status_dict['runtime_memory_gb'] = runtime_memory_gb
     # Other
     else:
-        message  = '{"name":' + '"' + node.name + '"' + ',"id":' + '"' + \
-        node._id + '"' + ',"finish":' + '"' + str(datetime.datetime.now()) +\
-        '"' + ',"estimated_memory":' + str(node._interface.estimated_memory) + ',"num_threads":' \
-        + str(node._interface.num_threads) + ',"error":"True"}'
+        status_dict['finish'] = str(datetime.datetime.now())
+        status_dict['error'] = True
 
-        logger.debug(message)
+    # Dump string to log
+    logger.debug(json.dumps(status_dict))

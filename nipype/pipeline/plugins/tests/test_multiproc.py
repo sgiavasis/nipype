@@ -1,12 +1,16 @@
+import logging
 import os
-import nipype.interfaces.base as nib
 from tempfile import mkdtemp
 from shutil import rmtree
+from multiprocessing import cpu_count
 
-from nipype.testing import assert_equal, assert_less_equal
+import nipype.interfaces.base as nib
+from nipype.utils import draw_gantt_chart
+from nipype.testing import assert_equal
 import nipype.pipeline.engine as pe
+from nipype.pipeline.plugins.callback_log import log_nodes_cb
+from nipype.pipeline.plugins.multiproc import get_system_total_memory_gb
 
- 
 class InputSpec(nib.TraitedSpec):
     input1 = nib.traits.Int(desc='a random int')
     input2 = nib.traits.Int(desc='a random int')
@@ -44,7 +48,7 @@ def test_run_multiproc():
     pipe.base_dir = os.getcwd()
     mod1.inputs.input1 = 1
     pipe.config['execution']['poll_sleep_duration'] = 2
-    execgraph = pipe.run(plugin="ResourceMultiProc")
+    execgraph = pipe.run(plugin="MultiProc")
     names = ['.'.join((node._hierarchy, node.name)) for node in execgraph.nodes()]
     node = execgraph.nodes()[names.index('pipe.mod1')]
     result = node.get_output('output1')
@@ -52,12 +56,11 @@ def test_run_multiproc():
     os.chdir(cur_dir)
     rmtree(temp_dir)
 
-################################
-
 
 class InputSpecSingleNode(nib.TraitedSpec):
     input1 = nib.traits.Int(desc='a random int')
     input2 = nib.traits.Int(desc='a random int')
+
 
 class OutputSpecSingleNode(nib.TraitedSpec):
     output1 = nib.traits.Int(desc='a random int')
@@ -78,14 +81,15 @@ class TestInterfaceSingleNode(nib.BaseInterface):
 
 
 def find_metrics(nodes, last_node):
-    import json
+    """
+    """
+
+    # Import packages
     from dateutil.parser import parse
-    from datetime import datetime
-    import datetime as d
+    import datetime
 
-
-    start = parse(nodes[0]['start'])
-    total_duration = int((parse(last_node['finish']) - start).total_seconds())
+    start = nodes[0]['start']
+    total_duration = int((last_node['finish'] - start).total_seconds())
 
     total_memory = []
     total_threads = []
@@ -102,30 +106,21 @@ def find_metrics(nodes, last_node):
         x = now
 
         for j in range(start_index, len(nodes)):
-            node_start = parse(nodes[j]['start'])
-            node_finish = parse(nodes[j]['finish'])
+            node_start = nodes[j]['start']
+            node_finish = nodes[j]['finish']
 
             if node_start < x and node_finish > x:
-                total_memory[i] += nodes[j]['estimated_memory']
-                total_threads[i] += nodes[j]['num_threads']
+                total_memory[i] += float(nodes[j]['estimated_memory_gb'])
+                total_threads[i] += int(nodes[j]['num_threads'])
                 start_index = j
 
             if node_start > x:
                 break
 
-        now += d.timedelta(seconds=1)
+        now += datetime.timedelta(seconds=1)
 
     return total_memory, total_threads
 
-
-import os
-from nipype.pipeline.plugins.callback_log import log_nodes_cb
-import logging
-import logging.handlers
-import psutil
-from multiprocessing import cpu_count
-
-from nipype.utils import draw_gantt_chart
 
 def test_do_not_use_more_memory_then_specified():
     LOG_FILENAME = 'callback.log'
@@ -143,10 +138,10 @@ def test_do_not_use_more_memory_then_specified():
     n3 = pe.Node(interface=TestInterfaceSingleNode(), name='n3')
     n4 = pe.Node(interface=TestInterfaceSingleNode(), name='n4')
 
-    n1.interface.estimated_memory = 1
-    n2.interface.estimated_memory = 1
-    n3.interface.estimated_memory = 10
-    n4.interface.estimated_memory = 1
+    n1.interface.estimated_memory_gb = 1
+    n2.interface.estimated_memory_gb = 1
+    n3.interface.estimated_memory_gb = 10
+    n4.interface.estimated_memory_gb = 1
 
     pipe.connect(n1, 'output1', n2, 'input1')
     pipe.connect(n1, 'output1', n3, 'input1')
@@ -154,11 +149,13 @@ def test_do_not_use_more_memory_then_specified():
     pipe.connect(n3, 'output1', n4, 'input2')
     n1.inputs.input1 = 10
 
-    pipe.run(plugin='ResourceMultiProc', plugin_args={'memory': max_memory, 
-                                        'status_callback': log_nodes_cb})
+    pipe.run(plugin='MultiProc',
+             plugin_args={'memory': max_memory,
+                          'status_callback': log_nodes_cb})
 
 
-    nodes, last_node = draw_gantt_chart.log_to_json(LOG_FILENAME)
+    nodes = draw_gantt_chart.log_to_dict(LOG_FILENAME)
+    last_node = nodes[-1]
     #usage in every second
     memory, threads = find_metrics(nodes, last_node)
 
@@ -178,11 +175,10 @@ def test_do_not_use_more_memory_then_specified():
             result = False
             break
 
-    yield assert_equal, result, True, "using more threads than system has (threads is not specified by user)"
+    yield assert_equal, result, True,\
+          "using more threads than system has (threads is not specified by user)"
 
     os.remove(LOG_FILENAME)
-
-
 
 
 def test_do_not_use_more_threads_then_specified():
@@ -212,10 +208,11 @@ def test_do_not_use_more_threads_then_specified():
     pipe.connect(n3, 'output1', n4, 'input2')
     n1.inputs.input1 = 10
     pipe.config['execution']['poll_sleep_duration'] = 1
-    pipe.run(plugin='ResourceMultiProc', plugin_args={'n_procs': max_threads,
-                                                      'status_callback': log_nodes_cb})
+    pipe.run(plugin='MultiProc', plugin_args={'n_procs': max_threads,
+                                              'status_callback': log_nodes_cb})
 
-    nodes, last_node = draw_gantt_chart.log_to_json(LOG_FILENAME)
+    nodes = draw_gantt_chart.log_to_dict(LOG_FILENAME)
+    last_node = nodes[-1]
     #usage in every second
     memory, threads = find_metrics(nodes, last_node)
 
@@ -227,13 +224,13 @@ def test_do_not_use_more_threads_then_specified():
 
     yield assert_equal, result, True, "using more threads than specified"
 
-    max_memory = psutil.virtual_memory().total / (1024*1024)
+    max_memory = get_system_total_memory_gb()
     result = True
     for m in memory:
         if m > max_memory:
             result = False
             break
-    yield assert_equal, result, True, "using more memory than system has (memory is not specified by user)"
+    yield assert_equal, result, True,\
+          "using more memory than system has (memory is not specified by user)"
 
     os.remove(LOG_FILENAME)
-
